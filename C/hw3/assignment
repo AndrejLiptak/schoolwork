@@ -1,0 +1,441 @@
+Doplnenie zadania:
+
+ * Opravený názov `enum cpuStatus` v zadaní. Začiatočné písmeno má byť malé.
+   Kostra je a bola v poriadku.
+ * Premenovaný parameter funkcie `cpuPeek` z `register` na `reg`.
+ * Odstránenie nezrovnalosti pri návratovej hodnote `cpuStep`, keď vykoná `halt`.
+   Má vrátiť 0.
+ * Pridaný prázdny `struct cpu` do `cpu.h`.
+ 
+ * Popis `cpuPeek` v prípade neexistujúceho registru.
+ * Ak nastane chyba pri vykonávaní inštrukcie, `instructionPointer` sa nemení.
+ 
+ * **2020-04-13 19:32**: Explicitne spomenutý typ atribútu `status` v `struct cpu`.
+ * **2020-04-14 22:22**: Pridaný príklad na návratovú hodnotu funkcie `cpuRun`.
+ * **2020-04-15 16:16**: Upravené názvy registrov pri `cmp` z `REG_A|B` na `REG_X|Y`.
+ * **2020-04-16 17:34**: Upresnené chovanie inštrukcií `ret`, `load` (a `store`).
+
+== Predstavenie úlohy
+
+Predstavme si jednoduchý procesor spracovávajúci aritmetické operácie. Náš
+procesor má k dispozícii pamäť s inštrukciami, ktoré
+spracováva. Medzivýsledky spracovávaných inštrukcií si ukladá do malej a rýchlej
+pamäte -- registrov. Okrem toho si môže výsledky uložiť aj na vrchol
+http://cs.wikipedia.org/wiki/Z%C3%A1sobn%C3%ADk_(datov%C3%A1_struktura)[zásobníka]
+(_stack_), ktorý sa nachádza na konci pamäte.
+
+Emulátor procesora postupne číta jednotlivé inštrukcie z pamäte a vykonáva ich.
+
+Pri spustení programu sa načíta súbor s inštrukciami, ktorého cesta (_path_) sa
+predá programu ako argument. Následne program vytvorí emulátor (procesor
+a pamäť), ktorý tieto inštrukcie vykoná.
+
+Formát súboru aj inštrukcií je popísaný nižšie. Súčasťou kostry je zdrojový kód
+kompilátora `compiler.c`, ktorým si môžete skompilovať program z textovej verzie
+inštrukcií (assembleru) do binárnej verzie akceptovanej procesorom.
+
+== Zadanie
+
+Implementujte funkcie z kostry úlohy, ktoré emulujú jednoduchý procesor.
+
+== Požiadavky
+
+.`NULL` parameter
+[WARNING]
+====
+Pokiaľ nie je explicitne uvedené inak, všetky funkcie preberajúce argument
+ukazateľom predpokladajú, že im predané ukazatele nie sú `NULL`.
+**To, že tomu tak naozaj je, overujte makrom `assert`!**
+====
+
+* Číselné atribúty ukladajte do premenných typu `int32_t`, ktorý nájdete
+  v hlavičkovom súbore `stdint.h`.
+* Nevyužité atribúty všetkých štruktúr udržujte
+  na vhodne zvolenej hodnote, teda čísle 0 či ukazateli `NULL`.
+* Pre dvojicu hlavičkového (`.h`) a implementačného (`.c`) súboru platí,
+  že pomocou `.h` zverejňujete funkcie poskytované `.c`. Teda, že hlavičkový
+  súbor udáva verejné rozhranie implementačného súboru. To samozrejme neznamená,
+  že si nemôžete zavádzať pomocné funkcie. Tie ale majte iba v `.c` súbore
+  a musia byť označené kľúčovým slovom `static` (príklad nižšie).
+* Dodržujte požadované rozhranie hlavičkových súborov. Musia obsahovať len
+  štruktúry a
+  funkcie špecifikované v zadaní. **Niektoré testy sa kompilujú s hlavičkovými
+  súbormi referenčného riešenia.** Pokiaľ by ste si vytvorili vlastné deklarácie,
+  ktoré nie sú zadaním požadované, alebo deklarácie v hlavičkovom
+  súbore upravili, napríklad pridaním vlastných argumentov alebo atribútov,
+  Váš program sa nemusí vôbec skompilovať!
+
+[source,c]
+----
+// Somewhere in a `.c` file...
+static int helperFunction(void);
+...
+static int helperFunction(void)
+{
+    return 42;
+}
+----
+
+=== Typ `struct cpu`
+
+Reprezentuje 32-bitový procesor. Nachádza sa v `cpu.h`. Obsahuje nasledujúce
+atribúty:
+
+ * celočíselné registre `A`, `B`, `C`, `D` slúžiace k ukladaniu medzivýpočtov,
+ * register `status` [.add]#typu `enum cpuStatus`# popisujúci stav procesora
+   (pozri sekcia 'Stavové kódy'),
+ * register `stackSize` obsahujúci aktuálny počet uložených hodnôt v zásobníku,
+ * register `instructionPointer` obsahujúci index inštrukcie, ktorá má byť
+   vykonaná v nasledujúcom kroku výpočtu,
+ * atribút `memory`, obsahujúci ukazateľ na pamäť emulovaného programu,
+ * atribúty `stackBottom` a `stackLimit`, obsahujúce ukazatele do pamäte emulovaného
+   programu, ktoré vymedzujú priestor, v ktorom sa zásobník v pamäti nachádza.
+
+=== Štruktúra pamäte
+
+[NOTE]
+====
+Aby sme odlíšili kontext pamäte programu a pamäte emulátoru, budeme _adresou_
+nazývať hodnotu premennej typu ukazateľ v jazyku C, _indexom_ (ktorý je číslo,
+nie ukazateľ) budeme nazývať adresu buniek v pamäti emulovaného programu. Jedna
+bunka emulovanej pamäte má veľkosť ako `int32_t` v reálnej pamäti.
+====
+
+Inštrukcie programu sa nachádzajú na začiatku pamäte. Zásobník sa nachádza
+na konci, a plniť sa bude smerom od konca pamäte (`stackBottom` vrátane)
+k začiatku, až po `stackLimit` nevrátane.
+Pamäť medzi inštrukciami a zásobníkom (ak nejaká existuje) musí byť vynulovaná.
+
+_Indexom inštrukcie_ rozumieme počet buniek typu `int32_t`, ktoré sa
+nachádzajú pred ňou. Napríklad, ak program tvoria dve inštrukcie a prvá
+má jeden operand, potom na indexe 0 je prvá inštrukcia, na indexe 1 je jej
+operand, nakoniec na indexe 2 je druhá inštrukcia.
+
+=== Vizualizácia pamäte
+
+image::memory_layout.svg[]
+
+=== Funkcie na prácu s procesorom
+
+Úloha spočíva prevažne v implementácii nasledujúcich funkcií. Ich hlavičky sa
+nachádzajú v `cpu.h`.
+
+[source,c]
+----
+int32_t* cpuCreateMemory(FILE *program, size_t stackCapacity, int32_t **stackBottom);
+----
+
+Funkcia prečíta binárny program pre procesor zo súboru `program` (napríklad pomocou
+funkcie `fgetc()` z knižnice `stdio.h` (http://www.cplusplus.com/reference/cstdio/fgetc/[dokumentácia]))
+a uloží ho do bloku pamäte *P*, ktorú naalokuje. Súbor do pamäte skopíruje až do konca (`EOF`).
+
+*P* musí za inštrukciami obsahovať dostatok voľného miesta pre zásobník
+veľkosti `stackCapacity` (počet `int32_t` buniek, nie bajtov). Na adresu, na ktorú
+ukazuje `stackBottom` (tj. do `pass:[*]stackBottom`) funkcia uloží adresu posledného
+prvku (typu `int32_t`) v *P*, s ktorým je ešte možné pracovať. Vráti ukazateľ
+na začiatok *P*, alebo `NULL` pri chybe. Za chybu sa tiež považuje prípad,
+ak počet bajtov vo vstupnom súbore nie je násobkom veľkosti typu `int32_t`.
+
+Veľkosť vstupu nemusí byť dopredu známa, preto je nutné pamäť podľa potreby
+zväčšovať. Aby nebola alokácia pamäte zbytočne neefektívna, táto funkcia
+*musí* alokovať pamäť po blokoch veľkosti 4 KiB.
+
+CAUTION: Súbor môžete prečítať len raz. **Nepredpokladajte**, že
+`program` reprezentuje regulárny súbor, tj. funkcie `ftell()`
+a `fseek()` nemusia na `program` dávať zmysel.
+
+[source,c]
+----
+void cpuCreate(struct cpu *cpu, int32_t *memory, int32_t *stackBottom, size_t stackCapacity);
+----
+
+Funkcia inicializuje premennú `cpu`. Parameter `memory` ukazuje na pamäť
+emulovaného programu, ktorý prečítala funkcia `cpuCreateMemory`.
+
+Atribút `stackBottom` je parameter, ktorý sa získa volaním `cpuCreateMemory(..., &stackBottom)`.
+`cpuCreate` musí nastaviť atribút `stackLimit` tak, aby ukazoval presne `stackCapacity`
+prvkov (typu `int32_t`) pred `stackBottom`. Priestor medzi týmito ukazateľmi
+bude slúžiť ako zásobník programu.
+Je v poriadku, ak medzi inštrukciami a zásobníkom nie je voľné miesto
+(tj. `stackLimit` ukazuje na poslednú inštrukciu),
+pretože `stackLimit` sa nikdy prepisovať nebude.
+
+[source,c]
+----
+void cpuDestroy(struct cpu *cpu);
+----
+
+Uvoľní zdroje procesora a nastaví ukazatele v štruktúre na `NULL`. Takisto vynuluje
+všetky registre.
+
+[source,c]
+----
+void cpuReset(struct cpu *cpu);
+----
+
+Vynuluje všetky registre (vrátane `status`) a vyprázdni a vynuluje zásobník.
+Nedealokuje žiadnu pamäť.
+
+[source,c]
+----
+int cpuStatus(struct cpu *cpu);
+----
+
+Vráti stavový kód procesora (atribút `status`).
+
+NOTE: Pre `cpuStep` a `cpuRun` platí, že pokiaľ stavový kód procesora
+je iný, než `cpuOK`, vrátia 0 a nerobia nič iné.
+
+[source,c]
+----
+int cpuStep(struct cpu *cpu);
+----
+
+Vykoná jednu inštrukciu procesora. Ak je úspešná, vráti nenulový kód, inak vráti 0.
+
+[source,c]
+----
+int cpuRun(struct cpu *cpu, size_t steps);
+----
+
+Vykoná `steps` inštrukcií. Vráti -K, ak sa procesor dostal vykonaním K inštrukcií
+do chybového stavu, inak vráti skutočný počet vykonaných inštrukcií. Ten môže byť
+menší ako `steps`, ak došlo k vykonaniu inštrukcie `halt`.
+
+[.add]#Napríklad pre nasledujúci program:#
+
+----
+movr C 42 ; Make loop jump.
+loop -112 ; Jump to an invalid address.
+----
+
+[.add]#... funkcia `cpuRun` najprv úspešne vykoná `movr`, potom úspešne vykoná
+`loop`, následne sa pri vykonávaní nasledujúcej (neexistujúcej, ale to
+nevadí) "inštrukcie" stane chyba kvôli zápornej hodnote
+`instructionPointer` - dohromady 3 kroky. Funkcia teda vráti -3.#
+
+[source,c]
+----
+int32_t cpuPeek(struct cpu *cpu, char reg);
+----
+
+Vráti hodnotu registra (`A` až `D`). Pre hodnotu `'S'` vráti obsah registra
+`stackSize`, pre hodnotu `'I'` vráti `instructionPointer`. Pre neexistujúci
+register vráti 0.
+
+== Inštrukcie
+
+Inštrukcie sú v binárnom súbore, ako aj v pamäti programu reprezentované ako
+32-bitové čísla. Môžu mať (32-bitové) parametre typu `REG` (číslo registra
+0 (`A`) až 3 (`D`)), `INDEX` (index inštrukcie) a `NUM` (celé číslo). Endianita
+inštrukcií a operandov je _little-endian_.
+
+=== Stavové kódy
+
+Inštrukcie môžu v istých prípadoch nastavovať stavový kód. V kostre sa nachádza
+enum `cpuStatus` s nasledujúcimi hodnotami (v poradí):
+
+* `cpuOK`,
+* `cpuHalted`,
+* `cpuIllegalInstruction`,
+* `cpuIllegalOperand`,
+* `cpuInvalidAddress`,
+* `cpuInvalidStackOperation`,
+* `cpuDivByZero`,
+* `cpuIOError`.
+
+Okrem `cpuOK` a `cpuHalted` sú všetky ostatné stavy _chybové_.
+Pre vykonávanie všetkých inštrukcií platí:
+
+ * Ak je stavový kód emulátora iný, než `cpuOK`, inštrukcia sa nevykoná.
+ * Ak je kód inštrukcie neznámy, nastaví sa kód `cpuIllegalInstruction`.
+ * Ak je register inštrukcie neznámy, nastaví sa kód `cpuIllegalOperand`.
+ * Ak je index inštrukcie v `instructionPointer` mimo pamäte emulovaného
+   programu, alebo ukazuje do zásobníka, nastaví sa kód `cpuInvalidAddress`.
+ * Ak počas vykonávania inštrukcie nastane chyba, `instructionPointer` sa nemení.
+
+Register `status` procesora je iniciálne vo funkcii `cpuCreate` nastavený na `cpuOK`.
+
+=== Zoznam inštrukcií
+
+Číselné hodnoty inštrukcií sú definované poradím v tomto zozname.
+
+[start=0]
+. `nop`, nerobí nič.
+. `halt`, zastaví vykonávanie programu a nastaví stav procesora na `cpuHalted`.
+  Funkcia `cpuStep()` po jej vykonaní vráti 0.
+. `add REG`, pripočíta k registru `A` hodnotu registra `REG`.
+. `sub REG`, odpočíta z registra `A` hodnotu registra `REG`.
+. `mul REG`, vynásobí register `A` hodnotou registra `REG`.
+. `div REG`, vydelí register `A` hodnotou registra `REG`. Ak je jeho hodnota
+  0, operáciu nevykoná, ale nastaví statový kód na `cpuDivByZero`.
+. `inc REG`, inkrementuje register `REG`.
+. `dec REG`, dekrementuje register `REG`.
+. `loop INDEX`, ak register `C` je nenulový, skočí na inštrukciu s indexom `INDEX`, inak
+  neurobí nič.
+. `movr REG NUM`, uloží do registra `REG` číslo `NUM`.
+. `load REG NUM`, uloží do registra `REG` číslo zo zásobníka, ktoré sa v ňom
+  nachádza na indexe `D` + `NUM` od konca. Teda pokiaľ register `D` aj
+  `NUM` sú rovné nule, uloží do registra hodnotu na vrchole zásobníka (tj.
+  poslednú vloženú). Zásobník
+  ostane nezmenený. V prípade, že `D` + `NUM` je index mimo [.add]#zaplnenej časti# zásobníka,
+  operácia sa nevykoná a nastaví sa stavový kód `cpuInvalidStackOperation`.
+. `store REG NUM` funguje podobne ako `load`, ale hodnotu na zásobník ukladá.
+  Veľkosť zásobníka ostáva nezmenená.
+. `in REG`, prečíta zo vstupu 32-bitové číslo a uloží ho do registra `REG`.
+  Ak bajty na vstupe nereprezentujú 32-bitové číslo, inštrukcia neurobí nič a nastaví
+  stav procesora na `cpuIOError`. Ak na vstupe už žiadne čísla nie sú (`EOF`),
+  nastaví register `C` na 0 a do `REG` uloží hodnotu -1 (aj v prípade, že `REG` je `C`).
+. `get REG`, prečíta zo vstupu jeden znak (bajt) a uloží ho do registra `REG`.
+  V prípade, že na vstupe už žiadne byty nie sú (`EOF`), sa inštrukcia
+  chová rovnako ako `in`.
+. `out REG`, vypíše hodnotu registra `REG` ako číslo na štandardný výstup.
+. `put REG`, ak je hodnota registra `REG` striktne menšia než 256, vypíše túto hodnotu
+  ako znak na štandardný výstup. Inak neurobí nič a nastaví statový kód `cpuIllegalOperand`.
+. `swap REG REG`, vymení hodnoty registrov.
+. `push REG`, pridá hodnotu registra `REG` na zásobník, ak nie je plný. Inak
+  nastaví statový kód `cpuInvalidStackOperation`. Inštrukcia pracuje s registrom
+  `stackSize`.
+. `pop REG`, ak je na zásobníku aspoň jeden prvok, odoberie ho a jeho hodnotu
+  uloží do registra `REG`. Inak neurobí nič a nastaví stavový kód `cpuInvalidStackOperation`.
+   Inštrukcia pracuje s registrom `stackSize`.
+
+TIP: Inštrukcie `in` a `get` v prípade `EOF` vynulujú register `C`, aby pri
+čítaní vstupu v cykle (inštrukciou `loop`) spôsobilo `EOF` ukončenie cyklu.
+
+=== Assembler
+
+Programy pre procesor môžete napísať v textovej podobe - assembleri, a ten si
+následne skompilovať pomocou kompilátora v súbore `compiler.c` z kostry, alebo
+pomocou referenčnej implementácie.
+
+Assembler môže obsahovať okrem inštrukcií aj deklaráciu návestí (alfanumerický
+ASCII identifikátor začínajúci písmenom nasledovaný dvojbodkou, napr. `here:`).
+Inštrukcie, ktoré berú argument typu `INDEX`, môžu použiť namiesto číselnej konštanty
+tieto návestia.
+
+Na každom riadku sa môže nachádzať najviac jedna inštrukcia, ktorá je od svojich
+operandov oddelená práve jednou medzerou. Pred a za ňou môže byť ľubovolný počet
+medzier. Komentáre začínajú znakom `;`.
+
+=== Príklad
+
+Assembler:
+
+[source,asm]
+----
+; simple homework assembly excercise
+  dec 1     ; Decrement register B, same as `dec B`.
+  loop here ; Same as loop 6.
+  push 0
+here:
+  halt
+----
+
+Binárny súbor (hodnota v prvom stĺpci (index) sa v súbore nenachádza,
+služí len pre názornejšiu ukážku):
+
+----
+index  1  2  3  4    význam
+0      07 00 00 00   ( 7) dec
+1      01 00 00 00             (operand register B)
+2      08 00 00 00   ( 8) loop
+3      06 00 00 00   ( 6)      (operand index 6)
+4      11 00 00 00   (17) push
+5      00 00 00 00   ( 0)      (operand register A)
+6      01 00 00 00   ( 1) halt
+----
+
+=== Rozhranie v príkazovom riadku
+
+Táto časť je implementovaná kostrou.
+
+Program akceptuje dva až tri argumenty: prvým je `run` alebo `trace`, druhý
+nepovinný je `stackCapacity`, posledný je cesta k súboru s inštrukciami. `run`
+vykoná všetky inštrukcie a vypíše stav CPU, `trace` vypíše stav po každej
+inštrukcii a počká na Enter pred vykonaním ďalšej.
+
+== Bonusové rozšírenia
+
+=== Inštrukcie skokov [2b]
+
+[NOTE]
+====
+Kód súvisiaci s touto rozšířenou instrukčnou sadou obaľte príkazmi
+preprocesora (každý na samostatnom riadku). Pre účely testovania pridajte k prepínačom
+prekladača (pre cmake obsah premennej `CMAKE_C_FLAGS`) prepínač `-DBONUS_JMP`.
+
+[source,c]
+----
+#ifdef BONUS_JMP
+    // Bonus code.
+#endif // BONUS_JMP
+----
+====
+
+Rozšírte `struct cpu` o register `result`, ktorý bude obsahovať výsledok poslednej
+aritmetickej operácie (`add`, `sub`, `mul`, `div`, `inc`, `dec`) alebo operácie `cmp`.
+
+Rozšírte všetky relevantné funkcie o register `result`. Funkcia `cpuPeek` ho bude
+vracať pri zadaní parametra `'R'`. Tento register bude ako operand dostupný
+pod indexom **4**.
+
+Inštrukčnú sadu rozšírte o nasledujúce inštrukcie:
+
+[start=19]
+. `cmp REG_X REG_Y`, do registra `result` zapíše `REG_X` - `REG_Y`. Hodnoty
+  registrov `REG_X` ani `REG_Y` sa nezmenia.
+. `jmp INDEX`, skočí na `INDEX`.
+. `jz INDEX`, skočí na `INDEX`, ak `result` sa rovná nule.
+. `jnz INDEX`, skočí na `INDEX`, ak `result` nie je nula.
+. `jgt INDEX`, skočí na `INDEX`, ak `result` je striktne väčší ako nula.
+
+Do registra `R` zároveň uložia svoj výsledok všetky aritmetické operácie
+(napr. `add` do `R` skopíruje nakoniec hodnotu `A`, `inc` do `R` skopíruje
+hodnotu operandu po jeho inkrementácii atď.) Ostatné inštrukcie (napr. `load`, `swap`, `in`)
+môžu tento register len čítať. Pri pokuse o zápis procesor nastaví stavový
+kód `cpuIllegalOperand`.
+
+=== Procedúry [2b]
+
+[NOTE]
+====
+Tento bonus povoľte makrom `BONUS_CALL`:
+
+[source,c]
+----
+#ifdef BONUS_CALL
+    // Bonus code.
+#endif // BONUS_CALL
+----
+====
+
+[start=24]
+. `call INDEX`, ak je na zásobníku dosť miesta, uloží na ňom index nasledujúcej
+  inštrukcie a skočí na `INDEX`. Inak nastaví stavový kód `cpuInvalidStackOperation`,
+. `ret`, vyberie z [.add]#vrcholu# zásobníka index inštrukcie (ktorú, [.add]#ak
+  bol program korektne napísaný,# tam vložila inštrukcia `call`) a skočí na ňu.
+  Ak je zásobník prázdny, nastaví stavový kód `cpuInvalidStackOperation`.
+
+CAUTION: Ak sa rozhodnete implementovať len druhý bonus, uistite sa,
+že inštrukcia `call` má vo vašom riešení rovnaký kód, aký by mala, ak by existovali
+aj inštrukcie `cmp` až `jgt`!
+
+== Poznámky
+
+* Program kompilujte príkazom
++
+----
+gcc -o hw03 main.c cpu.c -std=c99 -Wall -Wextra -Werror -pedantic
+----
+
+* Vzorové riešenie môžete spustiť na aise:
++
+----
+/home/kontr/pb071/hw03/compiler
+/home/kontr/pb071/hw03/cpu
+/home/kontr/pb071/hw03/cpu-bonus
+----
+
+* POZOR! Vzorové riešenie vyžaduje argument!
+* Nezabúdajte na vhodnú dekompozíciu. Vyrobte si pomocné funkcie, kde treba.
