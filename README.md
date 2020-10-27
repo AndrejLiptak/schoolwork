@@ -1,2 +1,2 @@
 # schoolwork
-Schoolwork during my studies of programming and develompent.
+Schoolwork done during my current studies of programming and develompent.
